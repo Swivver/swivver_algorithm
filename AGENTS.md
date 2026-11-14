@@ -2,7 +2,7 @@
 
 `swivver_algorithm` is Swivver's **public, Apache-2.0** repository for explainable recommendation, candidate ranking, diversity constraints, and offline evaluation (`https://github.com/Swivver/swivver_algorithm`).
 
-Every change in this repository must preserve the clean-room, policy, and neutrality invariants below.
+Every change in this repository must preserve the clean-room, policy, and neutrality invariants below. Active workspace development proceeds on the `dev` branch (`origin/dev`) prior to tagged `main` releases.
 
 ## Non-negotiable invariants
 
