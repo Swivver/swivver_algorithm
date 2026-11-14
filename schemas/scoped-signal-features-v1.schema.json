@@ -1,0 +1,131 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swivver.ai/schemas/algorithm/scoped-signal-features-v1.schema.json",
+  "title": "ScopedSignalFeaturesV1",
+  "description": "Versioned, opaque normalized Signal observations for optional candidate ranking. Excludes editorial merit scores, author credibility ranks, and universal quality oracle scores.",
+  "type": "object",
+  "$defs": {
+    "availability_status": {
+      "type": "string",
+      "enum": [
+        "available",
+        "unknown",
+        "unsupported",
+        "not_applicable",
+        "stale"
+      ],
+      "description": "Explicit measurement availability state. Non-available states must produce a neutral 0.0 ranking delta."
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "scoped-signal-features/1.0",
+      "description": "Explicit wire contract version."
+    },
+    "snapshot_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Optional immutable content/media snapshot identifier bound to these observations."
+    },
+    "availability": {
+      "$ref": "#/$defs/availability_status"
+    },
+    "coverage_ratio": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Fraction of requested scoped dimensions with available observations in [0, 1]."
+    },
+    "freshness_sec": {
+      "type": "number",
+      "minimum": 0.0,
+      "description": "Age in seconds since the bound snapshot was assessed."
+    },
+    "evidence_support_tier": {
+      "type": "string",
+      "enum": [
+        "supported",
+        "mixed",
+        "contradicted",
+        "unknown"
+      ],
+      "description": "Source-relative alignment tier for supplied claims against attached sources."
+    },
+    "consistency_tier": {
+      "type": "string",
+      "enum": [
+        "consistent",
+        "mixed",
+        "inconsistent",
+        "unknown"
+      ],
+      "description": "Internal consistency across headline, spoken update, and written article."
+    },
+    "technical_legibility_tier": {
+      "type": "string",
+      "enum": [
+        "clear",
+        "degraded",
+        "unusable",
+        "unknown"
+      ],
+      "description": "Technical audio/video/caption legibility observation tier."
+    },
+    "attention_pacing_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "D01 normalized [0, 1] sensory/cut intensity where higher values indicate rapid jolts or attention-bait pacing."
+    },
+    "bait_switch_risk": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "D02 normalized [0, 1] hook-to-substance mismatch risk."
+    },
+    "provenance_status": {
+      "type": "string",
+      "enum": [
+        "verified",
+        "declared",
+        "missing",
+        "invalid",
+        "unknown"
+      ],
+      "description": "Technical or caller-declared provenance state; missing provenance is neutral."
+    },
+    "independent_source_clusters": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of distinct attached source clusters."
+    },
+    "dimension_availability": {
+      "type": "object",
+      "description": "Optional per-dimension availability overrides; any non-available dimension yields 0.0 delta.",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "evidence_support_tier",
+          "consistency_tier",
+          "technical_legibility_tier",
+          "attention_pacing_score",
+          "bait_switch_risk",
+          "provenance_status",
+          "independent_source_clusters"
+        ]
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/availability_status"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "availability",
+    "coverage_ratio",
+    "freshness_sec"
+  ],
+  "additionalProperties": false
+}

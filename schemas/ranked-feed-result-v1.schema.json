@@ -1,0 +1,265 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swivver.ai/schemas/algorithm/ranked-feed-result-v1.schema.json",
+  "title": "RankedFeedResultV1",
+  "description": "Deterministic ranked feed output with user-safe explanations, session pacing cues, pagination cursor, and diversity audit.",
+  "type": "object",
+  "$defs": {
+    "reason_code": {
+      "type": "string",
+      "enum": [
+        "FOLLOWED_AUTHOR",
+        "TOPIC_MATCH",
+        "SOURCE_BACKED",
+        "READER_ENGAGEMENT",
+        "LANGUAGE_MATCH",
+        "RECENT_UPDATE",
+        "FRESH_DISCOVERY",
+        "GENERAL_DISCOVERY"
+      ]
+    },
+    "why_this": {
+      "type": "object",
+      "properties": {
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/reason_code"
+          },
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 140
+          },
+          "minItems": 1,
+          "maxItems": 2
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 240,
+          "description": "Plain-language explanation with at most 2 clauses and zero internal IDs or raw scores."
+        }
+      },
+      "required": [
+        "reason_codes",
+        "reasons",
+        "summary"
+      ],
+      "additionalProperties": false
+    },
+    "score_components": {
+      "type": "object",
+      "properties": {
+        "preference": {
+          "type": "number"
+        },
+        "freshness": {
+          "type": "number"
+        },
+        "engagement": {
+          "type": "number"
+        },
+        "signal_delta": {
+          "type": "number"
+        },
+        "exploration_bonus": {
+          "type": "number"
+        },
+        "diversity_penalty": {
+          "type": "number"
+        }
+      },
+      "required": [
+        "preference",
+        "freshness",
+        "engagement",
+        "signal_delta",
+        "exploration_bonus",
+        "diversity_penalty"
+      ],
+      "additionalProperties": false
+    },
+    "ranked_item": {
+      "type": "object",
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "score": {
+          "type": "number"
+        },
+        "score_components": {
+          "$ref": "#/$defs/score_components"
+        },
+        "why_this": {
+          "$ref": "#/$defs/why_this"
+        }
+      },
+      "required": [
+        "candidate_id",
+        "rank",
+        "score",
+        "why_this"
+      ],
+      "additionalProperties": false
+    },
+    "session_pacing_advisory": {
+      "type": "object",
+      "properties": {
+        "triggered": {
+          "type": "boolean"
+        },
+        "trigger_codes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "D01_HIGH_INTENSITY_STREAK",
+              "D03_SESSION_DEPTH_BOUNDARY"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "advisory_kind": {
+          "type": "string",
+          "enum": [
+            "none",
+            "slower_context_break",
+            "gentle_stopping_point"
+          ]
+        },
+        "insert_after_rank": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "message": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "high_intensity_streak": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "session_depth_items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "triggered",
+        "trigger_codes",
+        "advisory_kind",
+        "insert_after_rank",
+        "message",
+        "high_intensity_streak",
+        "session_depth_items"
+      ],
+      "additionalProperties": false
+    },
+    "diversity_audit": {
+      "type": "object",
+      "properties": {
+        "eligible_candidates": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dropped_ineligible": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "returned_count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique_authors": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "unique_topics": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_author_share": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "author_cap_deferrals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "topic_cap_deferrals": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cold_start_items": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "anomaly_discounted_items": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "eligible_candidates",
+        "dropped_ineligible",
+        "returned_count",
+        "unique_authors",
+        "unique_topics",
+        "max_author_share",
+        "author_cap_deferrals",
+        "topic_cap_deferrals",
+        "cold_start_items",
+        "anomaly_discounted_items"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "ranked-feed-result/1.0"
+    },
+    "model_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/ranked_item"
+      }
+    },
+    "session_pacing_advisory": {
+      "$ref": "#/$defs/session_pacing_advisory"
+    },
+    "next_cursor": {
+      "type": "string"
+    },
+    "diversity_audit": {
+      "$ref": "#/$defs/diversity_audit"
+    }
+  },
+  "required": [
+    "schema_version",
+    "model_version",
+    "items",
+    "session_pacing_advisory",
+    "next_cursor",
+    "diversity_audit"
+  ],
+  "additionalProperties": false
+}

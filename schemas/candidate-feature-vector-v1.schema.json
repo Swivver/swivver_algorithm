@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://swivver.ai/schemas/algorithm/candidate-feature-vector-v1.schema.json",
+  "title": "CandidateFeatureVectorV1",
+  "description": "Normalized candidate input vector supplied to the ranker after caller-enforced policy filtering.",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "candidate-feature-vector/1.0",
+      "description": "Explicit wire contract version."
+    },
+    "candidate_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque candidate Story or package identifier."
+    },
+    "author_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "Opaque author or publisher identifier used for diversity caps."
+    },
+    "topic_tags": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64
+      },
+      "maxItems": 32,
+      "uniqueItems": true,
+      "description": "Normalized topic identifiers attached to the candidate."
+    },
+    "language": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 35,
+      "description": "BCP-47 language tag for the active candidate package."
+    },
+    "published_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 publication or latest visible version timestamp."
+    },
+    "eligible": {
+      "type": "boolean",
+      "description": "Caller pre-ranking eligibility attestation. Candidates with false are hard-dropped."
+    },
+    "policy_blocked": {
+      "type": "boolean",
+      "description": "Legal, safety, region, rights, or moderation block flag. Any true value forces 0% exposure."
+    },
+    "followed_author": {
+      "type": "boolean",
+      "description": "Whether the viewer explicitly follows this candidate's author or publication."
+    },
+    "followed_topic_matches": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Count of viewer-selected preferred topics matched by this candidate."
+    },
+    "language_match": {
+      "type": "boolean",
+      "description": "Whether the candidate language matches the viewer's preferred language list."
+    },
+    "impression_count": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional valid impression count for cold-start detection."
+    },
+    "valid_watch_ratio": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Anti-abuse-filtered fraction of valid video completion in [0, 1]."
+    },
+    "article_open_rate": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Anti-abuse-filtered rate at which viewers open the connected written article."
+    },
+    "source_inspect_rate": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Anti-abuse-filtered rate at which viewers inspect attached sources."
+    },
+    "save_rate": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Anti-abuse-filtered bookmark/save rate."
+    },
+    "anomaly_flagged": {
+      "type": "boolean",
+      "description": "True when velocity or bot-pattern heuristics flagged engagement; engagement rollups are discounted to 0.0."
+    },
+    "signal": {
+      "$ref": "scoped-signal-features-v1.schema.json"
+    }
+  },
+  "required": [
+    "schema_version",
+    "candidate_id",
+    "author_id",
+    "topic_tags",
+    "language",
+    "published_at",
+    "eligible",
+    "policy_blocked",
+    "followed_author",
+    "followed_topic_matches",
+    "language_match",
+    "valid_watch_ratio",
+    "article_open_rate",
+    "source_inspect_rate",
+    "save_rate",
+    "anomaly_flagged"
+  ],
+  "additionalProperties": false
+}
