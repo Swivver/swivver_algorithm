@@ -13,7 +13,7 @@ const (
 	// ResultSchemaVersionV1 identifies the v1 RankedFeedResult wire contract.
 	ResultSchemaVersionV1 = "ranked-feed-result/1.0"
 	// DefaultModelVersion identifies the deterministic clean-room ranker release.
-	DefaultModelVersion = "swivver-ranker/0.1.0"
+	DefaultModelVersion = "swivver-ranker/1.0.0"
 )
 
 // ErrInvalidCursor is returned when a caller supplies a malformed or unsupported cursor.
@@ -270,7 +270,7 @@ type Config struct {
 	SessionDepthAdvisoryThreshold int
 }
 
-// DefaultConfig returns the calibrated clean-room v0.1 configuration.
+// DefaultConfig returns the calibrated clean-room v1.0 configuration.
 func DefaultConfig() Config {
 	return Config{
 		ModelVersion:                  DefaultModelVersion,

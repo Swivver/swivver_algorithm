@@ -33,12 +33,13 @@ Every change in this repository must preserve the clean-room, policy, and neutra
 | Path | Responsibility |
 | --- | --- |
 | `go.mod` | Pure-Go module (`github.com/Swivver/swivver_algorithm`, standard library only) |
-| `pkg/ranker/` | Deterministic, thread-safe in-memory candidate ranker, diversity re-ranker, pacing advisories, cursor pagination, and plain-language explanations |
+| `pkg/ranker/` | Deterministic, thread-safe in-memory candidate ranker, diversity re-ranker, pacing advisories, cursor pagination, plain-language explanations, and 5k/10k validation tests |
+| `pkg/interleave/` | Deterministic, policy-safe Team-Draft Interleaving, HMAC-signed opaque attribution tokens, idempotent `M01` deliberative usefulness scoring, sign test, and bootstrap 95% CI |
 | `schemas/` | Draft 2020-12 JSON Schemas (`scoped-signal-features-v1`, `candidate-feature-vector-v1`, `ranked-feed-result-v1`) |
-| `eval/` | Standard-library Python offline evaluation metrics (`NDCG@k`, author Gini, language parity, counterfactual `unknown` rank-delta), schema checker, and clean-room scanner |
+| `eval/` | Standard-library Python offline evaluation metrics (`NDCG@k`, author Gini, language parity, counterfactual `unknown` rank-delta), 5,000-package `VG-3`/`VG-5` validation suite, schema checker, and clean-room scanner |
 | `docs/adr/` | Architecture Decision Records |
 
-**Implementation vs. integration status:** This repository provides the local `v0.1` Go `pkg/ranker` library, versioned JSON Schemas, and offline evaluation suite. Cross-repository adapter wiring into the platform backend feed (`M3`) is separate and not established by files in this repository alone.
+**Implementation vs. integration status:** This repository provides the `v1.0.0` clean-room Go `pkg/ranker` and `pkg/interleave` libraries, versioned JSON Schemas, and 5,000-package evaluation suite. Cross-repository adapter wiring in the platform backend feed is separate and not established by files in this repository alone.
 
 ## Validation commands
 
@@ -48,12 +49,13 @@ Run all checks from the root of `swivver_algorithm`:
 gofmt -s -w .
 go vet ./...
 go test -race -cover ./...
-python3 -m unittest discover -s eval -v
-python3 eval/evaluate_offline.py
+python3.11 -m unittest discover -s eval -v
+python3.11 eval/evaluate_offline.py
+python3.11 eval/validate_5k_corpus.py
 ```
 
 ### Quality gates
 
-- Statement coverage in `pkg/ranker` must remain **`>= 95%`**.
-- Ranking 200 eligible candidates must remain deterministic, allocation-bounded, thread-safe under `-race`, and complete in **`< 5ms`**.
-- `python3 eval/evaluate_offline.py` must verify schema validity, counterfactual `unknown` non-demotion, and zero clean-room boundary violations.
+- Statement coverage in `pkg/ranker` and `pkg/interleave` must remain **`>= 95%`** under `go test -race`.
+- Ranking 200 eligible candidates must remain deterministic, allocation-bounded, thread-safe under `-race`, and complete well within the **`<= 25ms`** `p95` target (`< 5ms` budget).
+- `python3.11 eval/evaluate_offline.py` and `python3.11 eval/validate_5k_corpus.py` must verify schema validity, 10,000-trial policy-sandwich isolation, 5,000-candidate counterfactual `unknown` non-demotion, `>= 85%` ragebait suppression, `+- 3%` author/language parity, and zero clean-room boundary violations.
