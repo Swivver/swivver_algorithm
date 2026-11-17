@@ -6,10 +6,10 @@ Open-source recommendation, candidate ranking, diversity constraints, online Tea
 
 | Surface | Path | Implemented scope (`v1.0.0`) |
 | --- | --- | --- |
-| In-memory Go ranker | [`pkg/ranker/`](pkg/ranker) | Deterministic scoring (`swivver-ranker/1.0.0`), fail-closed policy-gate defense-in-depth, uncertainty-neutral Signal handling, sliding-window + MMR diversity, `D01`/`D03` session pacing advisories, plain-language `WhyThis`, cursor pagination (`98.4%` `-race` statement coverage) |
-| Online interleaving & attribution | [`pkg/interleave/`](pkg/interleave) | Deterministic, seed-reproducible Team-Draft Interleaving (`Interleave`), bilateral policy-sandwich enforcement (`0.00%` policy leak), opaque HMAC-SHA256 signed `AttributionMap` tokens, idempotent `M01` deliberative usefulness credit attribution (`ScoreOutcomes`, `AggregateStudy`), exact two-sided sign test, and 2,000-resample percentile bootstrap 95% confidence bounds (`100.0%` `-race` statement coverage) |
+| In-memory Go ranker | [`pkg/ranker/`](pkg/ranker) | Deterministic scoring (`swivver-ranker/1.0.0`), fail-closed policy-gate defense-in-depth, uncertainty-neutral Signal handling, corroborated low-polish journalism fairness, zero-source sensationalism demotion, 5-tier non-consecutive author/incident `DiversifyFeed` re-ranking, session pacing advisories, plain-language `WhyThis` (`FOLLOWED_AUTHOR`, `TOPIC_MATCH`, `REGION_MATCH`, `SOURCE_BACKED`, `RECENT_UPDATE`), cursor pagination (`>= 98.5%` `-race` statement coverage) |
+| Online interleaving & attribution | [`pkg/interleave/`](pkg/interleave) | Deterministic, seed-reproducible Team-Draft Interleaving (`Interleave`), bilateral policy-sandwich enforcement (`0.00%` policy leak), opaque HMAC-SHA256 signed `AttributionMap` tokens, idempotent deliberative usefulness credit attribution (`ScoreOutcomes`, `AggregateStudy`), exact two-sided sign test, and 2,000-resample percentile bootstrap 95% confidence bounds (`100.0%` `-race` statement coverage) |
 | Wire contracts | [`schemas/`](schemas) | Draft 2020-12 JSON Schemas: `scoped-signal-features-v1`, `candidate-feature-vector-v1`, `ranked-feed-result-v1` (`additionalProperties: false`) |
-| Evaluation & 5k validation suite | [`eval/`](eval) | Zero-dependency Python 3.11+ offline metrics (`NDCG@k`, author Gini, language parity, counterfactual `unknown` rank-delta), 5,000-package stratified `VG-3`/`VG-5` benchmark (`validate_5k_corpus.py`), Draft 2020-12 schema validator, and AST/source clean-room boundary scanner |
+| Evaluation, 5k & newsroom benchmarks | [`eval/`](eval), [`docs/newsroom-benchmark-2026-11-17.md`](docs/newsroom-benchmark-2026-11-17.md) | Zero-dependency Python 3.11+ offline metrics (`NDCG@k`, `MRR`, author Gini, language parity, counterfactual `unknown` rank-delta), 5,000-package stratified `VG-3`/`VG-5` benchmark (`validate_5k_corpus.py`), 6-archetype 2,000-session newsroom simulation & interleaving study (`evaluate_newsroom_simulation.py`), Draft 2020-12 schema validator, and AST/source clean-room boundary scanner |
 | Architecture decision | [`docs/adr/0001-clean-room-scoped-signal-contract.md`](docs/adr/0001-clean-room-scoped-signal-contract.md) | Accepted (`A2` pure-Go library + JSON Schema contracts) |
 | Platform backend integration | External | **Separate repository boundary**: the platform backend enforces pre- and post-ranking policy checks and calls this module in-process; this repository alone does not establish a deployed production feed |
 
@@ -20,6 +20,7 @@ Open-source recommendation, candidate ranking, diversity constraints, online Tea
 - **Anti-engagement-trap & bot immunity:** Deliberative reader depth (`article_open_rate`, `source_inspect_rate`, `save_rate`) outweighs passive video completion (`valid_watch_ratio`). When `anomaly_flagged: true`, engagement and cold-start exploration boosts are discounted to `0.0`.
 - **Opaque online experimentation:** `pkg/interleave` encodes per-slot `TeamA`/`TeamB` assignments inside an HMAC-SHA256 authenticated token so client surfaces receive standard user-safe `RankedItem` records with zero leaked experiment internals.
 - **Inspectable reasons (`WhyThis`):** Every ranked item returns at most 2 plain-language reasons without leaking internal identifiers, dimension codes, or raw floating-point scores.
+- **Production polish is not human value:** Corroborated field reporting (`evidence_support_tier: "supported"` or `independent_source_clusters >= 2` without active dispute) is never penalized for handheld/environmental `degraded` legibility or `missing` hardware provenance (`0.36` rank-position fairness gap across 46-item newsroom pools). Uncorroborated zero-source high-arousal or bait-switch clips receive bounded compound demotion (`100.0%` Top-5 suppression).
 - **Clean-room open-source scope:** Zero external Go or Python dependencies, no editorial merit or author-credibility scoring, and no universal quality oracle score.
 
 For reader product context see [Swivver for readers](https://swivver.ai/for-readers) and contributor guidelines in [AGENTS.md](AGENTS.md).
@@ -48,6 +49,7 @@ go test -v -race -cover ./...
 python3.11 -m unittest discover -s eval -v
 python3.11 eval/evaluate_offline.py
 python3.11 eval/validate_5k_corpus.py
+python3.11 eval/evaluate_newsroom_simulation.py --markdown
 ```
 
 ## License

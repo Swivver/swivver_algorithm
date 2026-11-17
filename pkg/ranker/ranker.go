@@ -31,33 +31,37 @@ func NewDefault() *Ranker {
 }
 
 type scoredCandidate struct {
-	candidateID          string
-	authorID             string
-	authorIdx            int
-	topics               []string
-	topicIDs             []int
-	publishedUnixNano    int64
-	followedAuthor       bool
-	followedTopicMatches int
-	languageMatch        bool
-	anomalyFlagged       bool
-	engagementEligible   bool
-	ageHours             float64
-	prefAuthor           float64
-	prefTopic            float64
-	prefLang             float64
-	preference           float64
-	freshness            float64
-	engagement           float64
-	signalDelta          float64
-	signalPositive       float64
-	explorationBonus     float64
-	rawScore             float64
-	diversityPenalty     float64
-	finalScore           float64
-	sourceBacked         bool
-	highIntensityD01     bool
-	isColdStart          bool
+	candidateID           string
+	authorID              string
+	authorIdx             int
+	topics                []string
+	topicIDs              []int
+	publishedUnixNano     int64
+	followedAuthor        bool
+	followedTopicMatches  int
+	regionMatch           bool
+	languageMatch         bool
+	anomalyFlagged        bool
+	engagementEligible    bool
+	ageHours              float64
+	prefAuthor            float64
+	prefTopic             float64
+	prefRegion            float64
+	prefLang              float64
+	preference            float64
+	freshness             float64
+	engagement            float64
+	signalDelta           float64
+	signalPositive        float64
+	explorationBonus      float64
+	rawScore              float64
+	diversityPenalty      float64
+	finalScore            float64
+	sourceBacked          bool
+	corroborationClusters int
+	evidenceSupported     bool
+	highIntensityD01      bool
+	isColdStart           bool
 }
 
 type cursorPayload struct {
@@ -101,6 +105,7 @@ func (r *Ranker) Rank(req RankRequest) (RankedFeedResult, error) {
 
 	authorIntern := make(map[string]int, len(req.Candidates)+len(cur.RecentAuthors))
 	topicIntern := make(map[string]int, len(req.Candidates)*2)
+	topicIDPool := make([]int, 0, len(req.Candidates)*3+len(cur.RecentTopics)*2)
 	internAuthor := func(a string) int {
 		if a == "" {
 			return -1
@@ -116,16 +121,23 @@ func (r *Ranker) Rank(req RankRequest) (RankedFeedResult, error) {
 		if len(tags) == 0 {
 			return nil
 		}
-		ids := make([]int, len(tags))
-		for i, t := range tags {
+		start := len(topicIDPool)
+		for _, t := range tags {
 			idx, ok := topicIntern[t]
 			if !ok {
 				idx = len(topicIntern)
 				topicIntern[t] = idx
 			}
-			ids[i] = idx
+			topicIDPool = append(topicIDPool, idx)
 		}
-		slices.Sort(ids)
+		ids := topicIDPool[start:len(topicIDPool):len(topicIDPool)]
+		if len(ids) == 2 {
+			if ids[0] > ids[1] {
+				ids[0], ids[1] = ids[1], ids[0]
+			}
+		} else if len(ids) > 2 {
+			slices.Sort(ids)
+		}
 		return ids
 	}
 
@@ -177,6 +189,7 @@ func (r *Ranker) Rank(req RankRequest) (RankedFeedResult, error) {
 		scored,
 		pageSize,
 		len(authorIntern),
+		len(topicIntern),
 		cur.RecentAuthors,
 		seedAuthorIDs,
 		cur.RecentTopics,
@@ -254,8 +267,23 @@ func (r *Ranker) Rank(req RankRequest) (RankedFeedResult, error) {
 	}, nil
 }
 
+// DiversifyFeed scores and re-ranks eligible candidates for a single feed page
+// while enforcing non-consecutive author/micro-incident streak caps and MMR diversity.
+func (r *Ranker) DiversifyFeed(candidates []CandidateFeatureVector, pageSize int, now time.Time) (RankedFeedResult, error) {
+	return r.Rank(RankRequest{
+		Candidates: candidates,
+		PageSize:   pageSize,
+		Now:        now,
+	})
+}
+
+// DiversifyFeed scores and re-ranks eligible candidates using DefaultConfig.
+func DiversifyFeed(candidates []CandidateFeatureVector, pageSize int, now time.Time) (RankedFeedResult, error) {
+	return NewDefault().DiversifyFeed(candidates, pageSize, now)
+}
+
 func (r *Ranker) scoreCandidate(c *CandidateFeatureVector, trimmedID string, now time.Time) scoredCandidate {
-	var prefAuthor, prefTopic, prefLang float64
+	var prefAuthor, prefTopic, prefRegion, prefLang float64
 	if c.FollowedAuthor {
 		prefAuthor = r.cfg.FollowedAuthorWeight
 	}
@@ -264,10 +292,13 @@ func (r *Ranker) scoreCandidate(c *CandidateFeatureVector, trimmedID string, now
 	} else if c.FollowedTopicMatches >= 2 {
 		prefTopic = r.cfg.TopicMatchWeight
 	}
+	if c.RegionMatch {
+		prefRegion = r.cfg.RegionMatchWeight
+	}
 	if c.LanguageMatch {
 		prefLang = r.cfg.LanguageMatchWeight
 	}
-	preference := prefAuthor + prefTopic + prefLang
+	preference := prefAuthor + prefTopic + prefRegion + prefLang
 
 	ageHours := 0.0
 	var pubNano int64
@@ -291,7 +322,7 @@ func (r *Ranker) scoreCandidate(c *CandidateFeatureVector, trimmedID string, now
 		engagementEligible = articleOpen >= 0.15 || sourceInspect >= 0.10 || save >= 0.08
 	}
 
-	signalDelta, signalPos, sourceBacked, highIntensity := r.scoreSignal(c.Signal)
+	signalDelta, signalPos, sourceBacked, clusters, evSupported, highIntensity := r.scoreSignal(c.Signal)
 
 	isUnassessed := !r.hasAnyAvailableDimension(c.Signal)
 	b0 := 0.0
@@ -311,30 +342,34 @@ func (r *Ranker) scoreCandidate(c *CandidateFeatureVector, trimmedID string, now
 	rawScore := preference + freshness + engagement + signalDelta + explorationBonus
 
 	return scoredCandidate{
-		candidateID:          trimmedID,
-		authorID:             strings.TrimSpace(c.AuthorID),
-		topics:               normalizeTopics(c.TopicTags),
-		publishedUnixNano:    pubNano,
-		followedAuthor:       c.FollowedAuthor,
-		followedTopicMatches: c.FollowedTopicMatches,
-		languageMatch:        c.LanguageMatch,
-		anomalyFlagged:       c.AnomalyFlagged,
-		engagementEligible:   engagementEligible,
-		ageHours:             ageHours,
-		prefAuthor:           prefAuthor,
-		prefTopic:            prefTopic,
-		prefLang:             prefLang,
-		preference:           preference,
-		freshness:            freshness,
-		engagement:           engagement,
-		signalDelta:          signalDelta,
-		signalPositive:       signalPos,
-		explorationBonus:     explorationBonus,
-		rawScore:             rawScore,
-		finalScore:           rawScore,
-		sourceBacked:         sourceBacked,
-		highIntensityD01:     highIntensity,
-		isColdStart:          isUnassessed && explorationBonus > 0,
+		candidateID:           trimmedID,
+		authorID:              strings.TrimSpace(c.AuthorID),
+		topics:                normalizeTopics(c.TopicTags),
+		publishedUnixNano:     pubNano,
+		followedAuthor:        c.FollowedAuthor,
+		followedTopicMatches:  c.FollowedTopicMatches,
+		regionMatch:           c.RegionMatch,
+		languageMatch:         c.LanguageMatch,
+		anomalyFlagged:        c.AnomalyFlagged,
+		engagementEligible:    engagementEligible,
+		ageHours:              ageHours,
+		prefAuthor:            prefAuthor,
+		prefTopic:             prefTopic,
+		prefRegion:            prefRegion,
+		prefLang:              prefLang,
+		preference:            preference,
+		freshness:             freshness,
+		engagement:            engagement,
+		signalDelta:           signalDelta,
+		signalPositive:        signalPos,
+		explorationBonus:      explorationBonus,
+		rawScore:              rawScore,
+		finalScore:            rawScore,
+		sourceBacked:          sourceBacked,
+		corroborationClusters: clusters,
+		evidenceSupported:     evSupported,
+		highIntensityD01:      highIntensity,
+		isColdStart:           isUnassessed && explorationBonus > 0,
 	}
 }
 
@@ -398,23 +433,42 @@ func (r *Ranker) hasAnyAvailableDimension(sig *ScopedSignalFeatures) bool {
 	return false
 }
 
-func (r *Ranker) scoreSignal(sig *ScopedSignalFeatures) (delta float64, positive float64, sourceBacked bool, highIntensity bool) {
+func (r *Ranker) scoreSignal(sig *ScopedSignalFeatures) (delta float64, positive float64, sourceBacked bool, clusters int, evSupported bool, highIntensity bool) {
 	if !r.isSignalActive(sig) {
-		return 0.0, 0.0, false, false
+		return 0.0, 0.0, false, 0, false, false
 	}
 
-	if r.isDimAvailable(sig, DimEvidenceSupport) {
+	evAvail := r.isDimAvailable(sig, DimEvidenceSupport)
+	consAvail := r.isDimAvailable(sig, DimConsistency)
+	legAvail := r.isDimAvailable(sig, DimTechnicalLegibility)
+	provAvail := r.isDimAvailable(sig, DimProvenance)
+	srcAvail := r.isDimAvailable(sig, DimIndependentSources)
+	pacingAvail := r.isDimAvailable(sig, DimAttentionPacing)
+	baitAvail := r.isDimAvailable(sig, DimBaitSwitch)
+
+	evSupported = evAvail && sig.EvidenceSupportTier == EvidenceSupported
+	evContradicted := evAvail && sig.EvidenceSupportTier == EvidenceContradicted
+	consInconsistent := consAvail && sig.ConsistencyTier == ConsistencyInconsistent
+	provInvalid := provAvail && sig.ProvenanceStatus == ProvenanceInvalid
+	disputed := evContradicted || consInconsistent || provInvalid
+
+	if srcAvail && sig.IndependentSourceClusters > 0 {
+		clusters = sig.IndependentSourceClusters
+	}
+	corroborated := !disputed && (evSupported || clusters >= 2)
+
+	if evAvail {
 		switch sig.EvidenceSupportTier {
 		case EvidenceSupported:
-			delta += 0.10
-			positive += 0.10
+			delta += 0.11
+			positive += 0.11
 			sourceBacked = true
 		case EvidenceContradicted:
 			delta -= 0.22
 		}
 	}
 
-	if r.isDimAvailable(sig, DimConsistency) {
+	if consAvail {
 		switch sig.ConsistencyTier {
 		case ConsistencyConsistent:
 			delta += 0.03
@@ -424,23 +478,27 @@ func (r *Ranker) scoreSignal(sig *ScopedSignalFeatures) (delta float64, positive
 		}
 	}
 
-	if r.isDimAvailable(sig, DimTechnicalLegibility) {
+	if legAvail {
 		switch sig.TechnicalLegibilityTier {
 		case LegibilityClear:
-			delta += 0.02
-			positive += 0.02
+			delta += 0.01
+			positive += 0.01
 		case LegibilityDegraded:
-			delta -= 0.03
+			// Production polish is not human value: corroborated field reporting
+			// with noisy/handheld capture is never penalized relative to studio polish.
+			if !corroborated {
+				delta -= 0.03
+			}
 		case LegibilityUnusable:
 			delta -= 0.12
 		}
 	}
 
-	if r.isDimAvailable(sig, DimProvenance) {
+	if provAvail {
 		switch sig.ProvenanceStatus {
 		case ProvenanceVerified:
-			delta += 0.03
-			positive += 0.03
+			delta += 0.02
+			positive += 0.02
 		case ProvenanceDeclared:
 			delta += 0.01
 			positive += 0.01
@@ -449,32 +507,50 @@ func (r *Ranker) scoreSignal(sig *ScopedSignalFeatures) (delta float64, positive
 		}
 	}
 
-	if r.isDimAvailable(sig, DimIndependentSources) {
-		if sig.IndependentSourceClusters == 1 {
+	if srcAvail {
+		switch {
+		case clusters == 1:
 			delta += 0.02
 			positive += 0.02
-		} else if sig.IndependentSourceClusters >= 2 {
+		case clusters == 2:
 			delta += 0.04
 			positive += 0.04
+			sourceBacked = true
+		case clusters >= 3:
+			delta += 0.05
+			positive += 0.05
 			sourceBacked = true
 		}
 	}
 
-	if r.isDimAvailable(sig, DimAttentionPacing) {
+	var arousalExcess, baitExcess float64
+	if pacingAvail {
 		pacing := clampUnit(sig.AttentionPacingScore)
 		if pacing >= r.cfg.HighIntensityPacingThreshold {
 			highIntensity = true
 		}
 		if pacing > 0.70 {
-			delta -= 0.08 * ((pacing - 0.70) / 0.30)
+			arousalExcess = (pacing - 0.70) / 0.30
+			lowBait := !baitAvail || clampUnit(sig.BaitSwitchRisk) <= 0.35
+			if !(corroborated && lowBait) {
+				delta -= 0.08 * arousalExcess
+			}
 		}
 	}
 
-	if r.isDimAvailable(sig, DimBaitSwitch) {
+	if baitAvail {
 		risk := clampUnit(sig.BaitSwitchRisk)
 		if risk > 0.35 {
-			delta -= 0.20 * ((risk - 0.35) / 0.65)
+			baitExcess = (risk - 0.35) / 0.65
+			delta -= 0.20 * baitExcess
 		}
+	}
+
+	// Uncertainty-calibrated compound demotion: applies only when zero-source status
+	// (or active dispute) AND sensational pacing/bait risk are explicitly measured.
+	explicitZeroSources := srcAvail && sig.IndependentSourceClusters == 0 && !evSupported
+	if (explicitZeroSources || disputed) && (arousalExcess > 0 || baitExcess > 0) {
+		delta -= 0.14 * max(arousalExcess, baitExcess)
 	}
 
 	if delta > r.cfg.MaxSignalBoost {
@@ -483,7 +559,7 @@ func (r *Ranker) scoreSignal(sig *ScopedSignalFeatures) (delta float64, positive
 	if delta < -r.cfg.MaxSignalDemotion {
 		delta = -r.cfg.MaxSignalDemotion
 	}
-	return delta, positive, sourceBacked, highIntensity
+	return delta, positive, sourceBacked, clusters, evSupported, highIntensity
 }
 
 func compareCandidates(scoreA, scoreB float64, pubA, pubB int64, idA, idB string) int {

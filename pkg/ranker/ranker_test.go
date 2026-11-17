@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"math/rand"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -695,6 +696,7 @@ func TestConfigNormalizationConcurrencyAndLatencyGate(t *testing.T) {
 	custom := New(Config{
 		DefaultPageSize:               500,
 		MaxPageSize:                   10,
+		RegionMatchWeight:             -1,
 		MaxSignalBoost:                -1,
 		MaxSignalDemotion:             -1,
 		ColdStartExplorationBonus:     -1,
@@ -734,22 +736,28 @@ func TestConfigNormalizationConcurrencyAndLatencyGate(t *testing.T) {
 	}
 
 	// Warmup + measure median over 20 runs to avoid CI scheduler jitter while asserting < 5ms.
-	start := time.Now()
+	for w := 0; w < 3; w++ {
+		_, _ = r.Rank(RankRequest{Candidates: batch200, PageSize: 20, Now: refNow})
+	}
 	const runs = 20
+	durations := make([]time.Duration, runs)
 	var sampleResult RankedFeedResult
 	for i := 0; i < runs; i++ {
+		t0 := time.Now()
 		sampleResult, err = r.Rank(RankRequest{
 			Candidates: batch200,
 			PageSize:   20,
 			Now:        refNow,
 		})
+		durations[i] = time.Since(t0)
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	avgDuration := time.Since(start) / runs
-	if avgDuration >= 5*time.Millisecond {
-		t.Fatalf("200-candidate ranking exceeded 5ms budget: avg=%v", avgDuration)
+	slices.Sort(durations)
+	medianDuration := durations[runs/2]
+	if medianDuration >= 5*time.Millisecond {
+		t.Fatalf("200-candidate ranking exceeded 5ms budget: median=%v", medianDuration)
 	}
 
 	// Verify JSON round-trip of RankedFeedResult.
@@ -826,6 +834,209 @@ func TestIsolatedDimensionsAndMissingMetadata(t *testing.T) {
 	})
 	if err != nil || len(res.Items) != 3 {
 		t.Fatalf("expected 3 items, err=%v len=%d", err, len(res.Items))
+	}
+}
+
+func TestLowPolishJournalismFairnessAndZeroSourceSensationalism(t *testing.T) {
+	r := NewDefault()
+
+	studioPolish := baseCandidate("studio-polish", "author-studio")
+	studioPolish.TopicTags = []string{"infrastructure", "energy"}
+	studioPolish.Signal = &ScopedSignalFeatures{
+		SchemaVersion:             SignalSchemaVersionV1,
+		Availability:              AvailabilityAvailable,
+		CoverageRatio:             1.0,
+		FreshnessSec:              45,
+		EvidenceSupportTier:       EvidenceSupported,
+		ConsistencyTier:           ConsistencyConsistent,
+		TechnicalLegibilityTier:   LegibilityClear,
+		AttentionPacingScore:      0.28,
+		BaitSwitchRisk:            0.04,
+		ProvenanceStatus:          ProvenanceVerified,
+		IndependentSourceClusters: 3,
+	}
+
+	fieldLowPolish := baseCandidate("field-low-polish", "author-field")
+	fieldLowPolish.TopicTags = []string{"civic", "transit"}
+	fieldLowPolish.Signal = &ScopedSignalFeatures{
+		SchemaVersion:             SignalSchemaVersionV1,
+		Availability:              AvailabilityAvailable,
+		CoverageRatio:             1.0,
+		FreshnessSec:              45,
+		EvidenceSupportTier:       EvidenceSupported,
+		ConsistencyTier:           ConsistencyConsistent,
+		TechnicalLegibilityTier:   LegibilityDegraded,
+		AttentionPacingScore:      0.79,
+		BaitSwitchRisk:            0.08,
+		ProvenanceStatus:          ProvenanceMissing,
+		IndependentSourceClusters: 3,
+	}
+
+	zeroSourceSensational := baseCandidate("zero-source-bait", "author-bait")
+	zeroSourceSensational.TopicTags = []string{"economy"}
+	zeroSourceSensational.ValidWatchRatio = 0.99
+	zeroSourceSensational.ArticleOpenRate = 0.02
+	zeroSourceSensational.SourceInspectRate = 0.0
+	zeroSourceSensational.SaveRate = 0.0
+	zeroSourceSensational.Signal = &ScopedSignalFeatures{
+		SchemaVersion:             SignalSchemaVersionV1,
+		Availability:              AvailabilityAvailable,
+		CoverageRatio:             0.9,
+		FreshnessSec:              45,
+		EvidenceSupportTier:       EvidenceMixed,
+		ConsistencyTier:           ConsistencyMixed,
+		TechnicalLegibilityTier:   LegibilityClear,
+		AttentionPacingScore:      0.92,
+		BaitSwitchRisk:            0.68,
+		ProvenanceStatus:          ProvenanceMissing,
+		IndependentSourceClusters: 0,
+	}
+
+	res, err := DiversifyFeed([]CandidateFeatureVector{zeroSourceSensational, fieldLowPolish, studioPolish}, 10, refNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(res.Items))
+	}
+	if res.Items[2].CandidateID != "zero-source-bait" {
+		t.Fatalf("expected zero-source high-arousal bait ranked last, got %s", res.Items[2].CandidateID)
+	}
+	if res.Items[2].ScoreComponents.SignalDelta >= -0.15 {
+		t.Fatalf("expected strong demotion for zero-source sensationalism, got %f", res.Items[2].ScoreComponents.SignalDelta)
+	}
+
+	// Verify corroborated handheld field reporting achieves exact SignalDelta parity with studio polish.
+	var studioDelta, fieldDelta float64
+	for _, it := range res.Items {
+		if it.CandidateID == "studio-polish" {
+			studioDelta = it.ScoreComponents.SignalDelta
+		}
+		if it.CandidateID == "field-low-polish" {
+			fieldDelta = it.ScoreComponents.SignalDelta
+		}
+	}
+	if math.Abs(studioDelta-fieldDelta) > 1e-9 {
+		t.Fatalf("expected zero SignalDelta fairness gap between studio (%f) and corroborated field (%f)", studioDelta, fieldDelta)
+	}
+
+	// Verify multi-cluster corroboration without NLI tier still protects LegibilityDegraded and surfaces cluster reason.
+	clusterOnlyField := baseCandidate("cluster-field", "author-local")
+	clusterOnlyField.LanguageMatch = false
+	clusterOnlyField.PublishedAt = refNow.Add(-20 * time.Hour)
+	clusterOnlyField.ImpressionCount = 300
+	clusterOnlyField.Signal = &ScopedSignalFeatures{
+		SchemaVersion:             SignalSchemaVersionV1,
+		Availability:              AvailabilityAvailable,
+		CoverageRatio:             0.5,
+		FreshnessSec:              60,
+		EvidenceSupportTier:       EvidenceUnknown,
+		TechnicalLegibilityTier:   LegibilityDegraded,
+		IndependentSourceClusters: 2,
+	}
+	resCluster, err := r.Rank(RankRequest{Candidates: []CandidateFeatureVector{clusterOnlyField}, Now: refNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resCluster.Items[0].ScoreComponents.SignalDelta <= 0 {
+		t.Fatalf("expected positive SignalDelta for 2-cluster degraded field report, got %f", resCluster.Items[0].ScoreComponents.SignalDelta)
+	}
+	if !strings.Contains(resCluster.Items[0].WhyThis.Summary, "multiple independent source clusters") {
+		t.Fatalf("expected multi-cluster corroboration explanation, got %q", resCluster.Items[0].WhyThis.Summary)
+	}
+}
+
+func TestStreakCapAcrossSmallAuthorPoolAndMicroIncidents(t *testing.T) {
+	r := NewDefault()
+
+	// 1. Small 3-author pool (< DiversityWindowSize=5) where author-c has 2 high-score items:
+	// Tier 4 (!consecAuthor) must prevent [a-1, b-1, c-1, c-2] back-to-back author streak.
+	a1 := baseCandidate("a-1", "author-a")
+	a1.FollowedAuthor = true
+	a1.TopicTags = []string{"climate"}
+	b1 := baseCandidate("b-1", "author-b")
+	b1.FollowedAuthor = true
+	b1.TopicTags = []string{"health"}
+	c1 := baseCandidate("c-1", "author-c")
+	c1.FollowedAuthor = true
+	c1.TopicTags = []string{"science"}
+	c2 := baseCandidate("c-2", "author-c")
+	c2.FollowedAuthor = true
+	c2.TopicTags = []string{"transit"}
+	a2 := baseCandidate("a-2", "author-a")
+	a2.TopicTags = []string{"energy"}
+	b2 := baseCandidate("b-2", "author-b")
+	b2.TopicTags = []string{"civic"}
+
+	resSmall, err := r.DiversifyFeed([]CandidateFeatureVector{a1, b1, c1, c2, a2, b2}, 6, refNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorByID := map[string]string{
+		"a-1": "author-a", "a-2": "author-a",
+		"b-1": "author-b", "b-2": "author-b",
+		"c-1": "author-c", "c-2": "author-c",
+	}
+	for i := 1; i < len(resSmall.Items); i++ {
+		prevA := authorByID[resSmall.Items[i-1].CandidateID]
+		currA := authorByID[resSmall.Items[i].CandidateID]
+		if prevA == currA {
+			t.Fatalf("unexpected back-to-back same author %s at ranks %d and %d", currA, i, i+1)
+		}
+	}
+
+	// 2. Micro-incident multi-tag overlap (2 shared tags across 4 total tags, Jaccard=2/4=0.5 / inter>=2)
+	// defers immediate repetition when an alternative beat exists.
+	inc1 := baseCandidate("inc-1", "w-1")
+	inc1.FollowedAuthor = true
+	inc1.FollowedTopicMatches = 2
+	inc1.PublishedAt = refNow.Add(-10 * time.Minute)
+	inc1.TopicTags = []string{"infrastructure", "substation-fire", "north"}
+	inc2 := baseCandidate("inc-2", "w-2")
+	inc2.FollowedAuthor = true
+	inc2.FollowedTopicMatches = 2
+	inc2.PublishedAt = refNow.Add(-20 * time.Minute)
+	inc2.TopicTags = []string{"infrastructure", "substation-fire", "grid", "investigation"}
+	altBeat := baseCandidate("alt-beat", "w-3")
+	altBeat.FollowedTopicMatches = 1
+	altBeat.RegionMatch = true
+	altBeat.PublishedAt = refNow.Add(-45 * time.Minute)
+	altBeat.TopicTags = []string{"maritime", "shipping"}
+
+	resInc, err := r.Rank(RankRequest{Candidates: []CandidateFeatureVector{inc1, inc2, altBeat}, PageSize: 3, Now: refNow})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resInc.Items[0].CandidateID != "inc-1" || resInc.Items[1].CandidateID != "alt-beat" || resInc.Items[2].CandidateID != "inc-2" {
+		t.Fatalf("expected alt-beat interleaved between micro-incident items, got [%s, %s, %s]",
+			resInc.Items[0].CandidateID, resInc.Items[1].CandidateID, resInc.Items[2].CandidateID)
+	}
+	hasRegionCode := false
+	for _, rc := range resInc.Items[1].WhyThis.ReasonCodes {
+		if rc == ReasonRegionMatch {
+			hasRegionCode = true
+		}
+	}
+	if !hasRegionCode {
+		t.Fatalf("expected REGION_MATCH reason code on regional story, got %+v", resInc.Items[1].WhyThis)
+	}
+
+	// Exercise 2-element duplicate topic deduplication and >8 topic tags stack-fallback path.
+	manyTags := baseCandidate("many-tags", "w-4")
+	manyTags.TopicTags = []string{"t1", "t2", "t3", "t4", "t5", "t6", "t7", "t8", "t9", "t10"}
+	dupTwoTags := baseCandidate("dup-two", "w-5")
+	dupTwoTags.TopicTags = []string{"Civic", "civic"}
+	singleReason := baseCandidate("single-reason", "w-6")
+	singleReason.LanguageMatch = true
+	singleReason.PublishedAt = refNow.Add(-36 * time.Hour)
+	singleReason.ImpressionCount = 400
+	resExtra, err := r.Rank(RankRequest{
+		Candidates: []CandidateFeatureVector{dupTwoTags, manyTags, singleReason},
+		PageSize:   5,
+		Now:        refNow,
+	})
+	if err != nil || len(resExtra.Items) != 3 {
+		t.Fatalf("unexpected extra edge-case result: len=%d err=%v", len(resExtra.Items), err)
 	}
 }
 

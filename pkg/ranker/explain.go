@@ -1,9 +1,6 @@
 package ranker
 
-import (
-	"math"
-	"slices"
-)
+import "math"
 
 type weightedReason struct {
 	code     ReasonCode
@@ -12,67 +9,106 @@ type weightedReason struct {
 	priority int
 }
 
+func betterReason(a, b weightedReason) bool {
+	const eps = 1e-12
+	if diff := a.weight - b.weight; math.Abs(diff) > eps {
+		return diff > 0
+	}
+	return a.priority < b.priority
+}
+
 func buildWhyThis(sc *scoredCandidate) WhyThis {
-	candidates := make([]weightedReason, 0, 6)
+	var buf [8]weightedReason
+	n := 0
 
 	if sc.followedAuthor {
-		candidates = append(candidates, weightedReason{
+		buf[n] = weightedReason{
 			code:     ReasonFollowedAuthor,
 			text:     "From a writer or publication you follow",
 			weight:   sc.prefAuthor,
 			priority: 1,
-		})
+		}
+		n++
 	}
 	if sc.followedTopicMatches > 0 {
-		candidates = append(candidates, weightedReason{
+		topicText := "Matches topics in your preferences"
+		if sc.followedTopicMatches >= 2 {
+			topicText = "Matches multiple topics in your preferences"
+		}
+		buf[n] = weightedReason{
 			code:     ReasonTopicMatch,
-			text:     "Matches topics in your preferences",
+			text:     topicText,
 			weight:   sc.prefTopic,
 			priority: 2,
-		})
+		}
+		n++
+	}
+	if sc.regionMatch {
+		buf[n] = weightedReason{
+			code:     ReasonRegionMatch,
+			text:     "Relevant to your selected region",
+			weight:   sc.prefRegion,
+			priority: 3,
+		}
+		n++
 	}
 	if sc.sourceBacked {
-		candidates = append(candidates, weightedReason{
+		sourceText := "Includes linked sources you can inspect"
+		if sc.evidenceSupported && sc.corroborationClusters >= 2 {
+			sourceText = "Corroborated across multiple independent sources"
+		} else if sc.corroborationClusters >= 2 {
+			sourceText = "Backed by multiple independent source clusters"
+		}
+		buf[n] = weightedReason{
 			code:     ReasonSourceBacked,
-			text:     "Includes linked sources you can inspect",
+			text:     sourceText,
 			weight:   sc.signalPositive,
-			priority: 3,
-		})
+			priority: 4,
+		}
+		n++
 	}
 	if sc.engagementEligible {
-		candidates = append(candidates, weightedReason{
+		buf[n] = weightedReason{
 			code:     ReasonReaderEngagement,
 			text:     "Readers are opening the full article and sources",
 			weight:   sc.engagement,
-			priority: 4,
-		})
+			priority: 5,
+		}
+		n++
 	}
 	if sc.languageMatch {
-		candidates = append(candidates, weightedReason{
+		buf[n] = weightedReason{
 			code:     ReasonLanguageMatch,
 			text:     "In your preferred reading language",
 			weight:   sc.prefLang,
-			priority: 5,
-		})
+			priority: 6,
+		}
+		n++
 	}
 	if sc.ageHours <= 12.0 {
-		candidates = append(candidates, weightedReason{
+		recencyText := "Published recently"
+		if sc.ageHours <= 3.0 {
+			recencyText = "Timely developing update"
+		}
+		buf[n] = weightedReason{
 			code:     ReasonRecentUpdate,
-			text:     "Published recently",
+			text:     recencyText,
 			weight:   sc.freshness,
-			priority: 6,
-		})
+			priority: 7,
+		}
+		n++
 	}
 	if sc.isColdStart {
-		candidates = append(candidates, weightedReason{
+		buf[n] = weightedReason{
 			code:     ReasonFreshDiscovery,
 			text:     "New story surfaced for discovery",
 			weight:   sc.explorationBonus,
-			priority: 7,
-		})
+			priority: 8,
+		}
+		n++
 	}
 
-	if len(candidates) == 0 {
+	if n == 0 {
 		code := ReasonGeneralDiscovery
 		text := "Selected from eligible recent reporting"
 		return WhyThis{
@@ -82,33 +118,36 @@ func buildWhyThis(sc *scoredCandidate) WhyThis {
 		}
 	}
 
-	slices.SortFunc(candidates, func(a, b weightedReason) int {
-		const eps = 1e-12
-		if diff := a.weight - b.weight; math.Abs(diff) > eps {
-			if diff > 0 {
-				return -1
-			}
-			return 1
+	bestIdx := 0
+	for i := 1; i < n; i++ {
+		if betterReason(buf[i], buf[bestIdx]) {
+			bestIdx = i
 		}
-		return a.priority - b.priority
-	})
-
-	limit := min(2, len(candidates))
-	codes := make([]ReasonCode, limit)
-	reasons := make([]string, limit)
-	for i := 0; i < limit; i++ {
-		codes[i] = candidates[i].code
-		reasons[i] = candidates[i].text
 	}
 
-	summary := reasons[0] + "."
-	if limit == 2 {
-		summary = reasons[0] + " · " + reasons[1] + "."
+	if n == 1 {
+		r0 := buf[bestIdx]
+		return WhyThis{
+			ReasonCodes: []ReasonCode{r0.code},
+			Reasons:     []string{r0.text},
+			Summary:     r0.text + ".",
+		}
 	}
 
+	secondIdx := -1
+	for i := 0; i < n; i++ {
+		if i == bestIdx {
+			continue
+		}
+		if secondIdx == -1 || betterReason(buf[i], buf[secondIdx]) {
+			secondIdx = i
+		}
+	}
+
+	r0, r1 := buf[bestIdx], buf[secondIdx]
 	return WhyThis{
-		ReasonCodes: codes,
-		Reasons:     reasons,
-		Summary:     summary,
+		ReasonCodes: []ReasonCode{r0.code, r1.code},
+		Reasons:     []string{r0.text, r1.text},
+		Summary:     r0.text + " · " + r1.text + ".",
 	}
 }

@@ -10,6 +10,7 @@
       "enum": [
         "FOLLOWED_AUTHOR",
         "TOPIC_MATCH",
+        "REGION_MATCH",
         "SOURCE_BACKED",
         "READER_ENGAGEMENT",
         "LANGUAGE_MATCH",

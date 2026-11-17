@@ -52,6 +52,7 @@ go test -race -cover ./...
 python3.11 -m unittest discover -s eval -v
 python3.11 eval/evaluate_offline.py
 python3.11 eval/validate_5k_corpus.py
+python3.11 eval/evaluate_newsroom_simulation.py
 ```
 
 ### Quality gates

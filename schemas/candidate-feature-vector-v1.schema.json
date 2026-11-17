@@ -65,6 +65,10 @@
       "type": "boolean",
       "description": "Whether the candidate language matches the viewer's preferred language list."
     },
+    "region_match": {
+      "type": "boolean",
+      "description": "Optional flag indicating whether the candidate matches the viewer's preferred region or local beat."
+    },
     "impression_count": {
       "type": "integer",
       "minimum": 0,

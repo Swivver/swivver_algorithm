@@ -6,17 +6,20 @@ import (
 )
 
 type candidateEval struct {
-	idx           int
-	effScore      float64
-	penalty       float64
-	authorBlocked bool
-	topicBlocked  bool
+	idx               int
+	effScore          float64
+	penalty           float64
+	authorBlocked     bool
+	consecutiveAuthor bool
+	topicBlocked      bool
+	incidentBlocked   bool
 }
 
 func (r *Ranker) selectDiversePage(
 	pool []scoredCandidate,
 	pageSize int,
 	numAuthors int,
+	numTopics int,
 	seedAuthors []string,
 	seedAuthorIDs []int,
 	seedTopics [][]string,
@@ -44,14 +47,27 @@ func (r *Ranker) selectDiversePage(
 	selected = make([]scoredCandidate, 0, target)
 	evals := make([]candidateEval, 0, len(pool))
 
+	maxAuthorWin := r.cfg.MaxSameAuthorPerWindow
+	maxTopicWin := r.cfg.MaxSameTopicPerWindow
+
 	for len(selected) < target {
 		bestStrictIdx := -1
 		bestStrictScore := 0.0
+		bestWindowIdx := -1
+		bestWindowScore := 0.0
 		bestAuthorOnlyIdx := -1
 		bestAuthorOnlyScore := 0.0
+		bestNoAuthorStreakIdx := -1
+		bestNoAuthorStreakScore := 0.0
 		bestFallbackIdx := -1
 		bestFallbackScore := 0.0
 		evals = evals[:0]
+
+		lastAuthorIdx := -1
+		if len(recentAuthorIDs) > 0 {
+			lastAuthorIdx = recentAuthorIDs[len(recentAuthorIDs)-1]
+		}
+		_ = numTopics
 
 		for i := range pool {
 			if used[i] {
@@ -61,23 +77,43 @@ func (r *Ranker) selectDiversePage(
 			if bestStrictIdx != -1 && cand.rawScore < bestStrictScore-1e-12 {
 				break
 			}
-			penalty := r.computeMMRPenalty(cand, authorPageCounts, recentTopicIDs)
+
+			var penalty float64
+			if cand.authorIdx >= 0 && cand.authorIdx < len(authorPageCounts) {
+				if repeats := authorPageCounts[cand.authorIdx]; repeats > 0 {
+					penalty += r.cfg.MMRAuthorPenalty * float64(repeats)
+				}
+			}
+			maxJaccard, tBlocked, incBlocked := evaluateTopicWindow(cand.topicIDs, recentTopicIDs, maxTopicWin)
+			if maxJaccard > 0 {
+				penalty += r.cfg.MMRTopicPenalty * maxJaccard
+			}
 			effScore := cand.rawScore - penalty
-			aBlocked := r.isAuthorWindowBlocked(cand.authorIdx, recentAuthorIDs)
-			tBlocked := r.isTopicWindowBlocked(cand.topicIDs, recentTopicIDs)
+
+			consecAuthor := lastAuthorIdx >= 0 && cand.authorIdx == lastAuthorIdx
+			aBlocked := consecAuthor || isAuthorInWindow(cand.authorIdx, recentAuthorIDs, maxAuthorWin)
 
 			evals = append(evals, candidateEval{
-				idx:           i,
-				effScore:      effScore,
-				penalty:       penalty,
-				authorBlocked: aBlocked,
-				topicBlocked:  tBlocked,
+				idx:               i,
+				effScore:          effScore,
+				penalty:           penalty,
+				authorBlocked:     aBlocked,
+				consecutiveAuthor: consecAuthor,
+				topicBlocked:      tBlocked,
+				incidentBlocked:   incBlocked,
 			})
 
 			if bestFallbackIdx == -1 ||
 				compareCandidates(effScore, bestFallbackScore, cand.publishedUnixNano, pool[bestFallbackIdx].publishedUnixNano, cand.candidateID, pool[bestFallbackIdx].candidateID) < 0 {
 				bestFallbackIdx = i
 				bestFallbackScore = effScore
+			}
+			if !consecAuthor {
+				if bestNoAuthorStreakIdx == -1 ||
+					compareCandidates(effScore, bestNoAuthorStreakScore, cand.publishedUnixNano, pool[bestNoAuthorStreakIdx].publishedUnixNano, cand.candidateID, pool[bestNoAuthorStreakIdx].candidateID) < 0 {
+					bestNoAuthorStreakIdx = i
+					bestNoAuthorStreakScore = effScore
+				}
 			}
 			if !aBlocked {
 				if bestAuthorOnlyIdx == -1 ||
@@ -86,25 +122,40 @@ func (r *Ranker) selectDiversePage(
 					bestAuthorOnlyScore = effScore
 				}
 				if !tBlocked {
-					if bestStrictIdx == -1 ||
-						compareCandidates(effScore, bestStrictScore, cand.publishedUnixNano, pool[bestStrictIdx].publishedUnixNano, cand.candidateID, pool[bestStrictIdx].candidateID) < 0 {
-						bestStrictIdx = i
-						bestStrictScore = effScore
+					if bestWindowIdx == -1 ||
+						compareCandidates(effScore, bestWindowScore, cand.publishedUnixNano, pool[bestWindowIdx].publishedUnixNano, cand.candidateID, pool[bestWindowIdx].candidateID) < 0 {
+						bestWindowIdx = i
+						bestWindowScore = effScore
+					}
+					if !incBlocked {
+						if bestStrictIdx == -1 ||
+							compareCandidates(effScore, bestStrictScore, cand.publishedUnixNano, pool[bestStrictIdx].publishedUnixNano, cand.candidateID, pool[bestStrictIdx].candidateID) < 0 {
+							bestStrictIdx = i
+							bestStrictScore = effScore
+						}
 					}
 				}
 			}
 		}
 
-		chosenIdx := bestStrictIdx
-		chosenScore := bestStrictScore
-		if chosenIdx == -1 {
-			if bestAuthorOnlyIdx != -1 {
-				chosenIdx = bestAuthorOnlyIdx
-				chosenScore = bestAuthorOnlyScore
-			} else {
-				chosenIdx = bestFallbackIdx
-				chosenScore = bestFallbackScore
-			}
+		var chosenIdx int
+		var chosenScore float64
+		switch {
+		case bestStrictIdx != -1:
+			chosenIdx = bestStrictIdx
+			chosenScore = bestStrictScore
+		case bestWindowIdx != -1:
+			chosenIdx = bestWindowIdx
+			chosenScore = bestWindowScore
+		case bestAuthorOnlyIdx != -1:
+			chosenIdx = bestAuthorOnlyIdx
+			chosenScore = bestAuthorOnlyScore
+		case bestNoAuthorStreakIdx != -1:
+			chosenIdx = bestNoAuthorStreakIdx
+			chosenScore = bestNoAuthorStreakScore
+		default:
+			chosenIdx = bestFallbackIdx
+			chosenScore = bestFallbackScore
 		}
 
 		chosen := &pool[chosenIdx]
@@ -117,9 +168,9 @@ func (r *Ranker) selectDiversePage(
 			}
 			other := &pool[ev.idx]
 			if compareCandidates(ev.effScore, chosenScore, other.publishedUnixNano, chosen.publishedUnixNano, other.candidateID, chosen.candidateID) < 0 {
-				if ev.authorBlocked {
+				if ev.authorBlocked || ev.consecutiveAuthor {
 					authorDeferrals++
-				} else if ev.topicBlocked {
+				} else if ev.topicBlocked || ev.incidentBlocked {
 					topicDeferrals++
 				}
 			}
@@ -143,30 +194,7 @@ func (r *Ranker) selectDiversePage(
 	return selected, authorDeferrals, topicDeferrals, recentAuthors, recentTopics
 }
 
-func (r *Ranker) computeMMRPenalty(
-	cand *scoredCandidate,
-	authorCounts []int,
-	recentTopicIDs [][]int,
-) float64 {
-	var penalty float64
-	if cand.authorIdx >= 0 && cand.authorIdx < len(authorCounts) {
-		if repeats := authorCounts[cand.authorIdx]; repeats > 0 {
-			penalty += r.cfg.MMRAuthorPenalty * float64(repeats)
-		}
-	}
-	if len(cand.topicIDs) > 0 && len(recentTopicIDs) > 0 {
-		maxJaccard := 0.0
-		for _, prev := range recentTopicIDs {
-			if j := sortedIntsJaccard(cand.topicIDs, prev); j > maxJaccard {
-				maxJaccard = j
-			}
-		}
-		penalty += r.cfg.MMRTopicPenalty * maxJaccard
-	}
-	return penalty
-}
-
-func (r *Ranker) isAuthorWindowBlocked(authorIdx int, recentAuthorIDs []int) bool {
+func isAuthorInWindow(authorIdx int, recentAuthorIDs []int, maxAllowed int) bool {
 	if authorIdx < 0 {
 		return false
 	}
@@ -174,27 +202,63 @@ func (r *Ranker) isAuthorWindowBlocked(authorIdx int, recentAuthorIDs []int) boo
 	for _, a := range recentAuthorIDs {
 		if a == authorIdx {
 			count++
-		}
-	}
-	return count >= r.cfg.MaxSameAuthorPerWindow
-}
-
-func (r *Ranker) isTopicWindowBlocked(topicIDs []int, recentTopicIDs [][]int) bool {
-	if len(topicIDs) == 0 || len(recentTopicIDs) == 0 {
-		return false
-	}
-	for _, tid := range topicIDs {
-		count := 0
-		for _, prevSlice := range recentTopicIDs {
-			if slices.Contains(prevSlice, tid) {
-				count++
+			if count >= maxAllowed {
+				return true
 			}
-		}
-		if count >= r.cfg.MaxSameTopicPerWindow {
-			return true
 		}
 	}
 	return false
+}
+
+func evaluateTopicWindow(topicIDs []int, recentTopicIDs [][]int, maxAllowed int) (maxJaccard float64, tBlocked bool, incBlocked bool) {
+	nCand := len(topicIDs)
+	nWin := len(recentTopicIDs)
+	if nCand == 0 || nWin == 0 {
+		return 0.0, false, false
+	}
+
+	var stackCounts [8]int
+	var counts []int
+	if nCand <= len(stackCounts) {
+		counts = stackCounts[:nCand]
+	} else {
+		counts = make([]int, nCand)
+	}
+
+	lastWinIdx := nWin - 1
+	for wIdx, prev := range recentTopicIDs {
+		nPrev := len(prev)
+		if nPrev == 0 {
+			continue
+		}
+		i, j, inter := 0, 0, 0
+		for i < nCand && j < nPrev {
+			ti, pj := topicIDs[i], prev[j]
+			if ti == pj {
+				inter++
+				counts[i]++
+				if counts[i] >= maxAllowed {
+					tBlocked = true
+				}
+				i++
+				j++
+			} else if ti < pj {
+				i++
+			} else {
+				j++
+			}
+		}
+		if inter > 0 {
+			denom := nCand + nPrev - inter
+			if jacc := float64(inter) / float64(denom); jacc > maxJaccard {
+				maxJaccard = jacc
+			}
+			if wIdx == lastWinIdx && (inter >= 2 || inter*2 >= denom) {
+				incBlocked = true
+			}
+		}
+	}
+	return maxJaccard, tBlocked, incBlocked
 }
 
 func (r *Ranker) evaluateSessionPacing(
@@ -341,31 +405,23 @@ func normalizeTopics(tags []string) []string {
 			out = append(out, cleaned)
 		}
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
-}
-
-func sortedIntsJaccard(a, b []int) float64 {
-	if len(a) == 0 || len(b) == 0 {
-		return 0.0
-	}
-	i, j, inter := 0, 0, 0
-	for i < len(a) && j < len(b) {
-		if a[i] == b[j] {
-			inter++
-			i++
-			j++
-		} else if a[i] < b[j] {
-			i++
-		} else {
-			j++
+	switch len(out) {
+	case 0:
+		return nil
+	case 1:
+		return out
+	case 2:
+		if out[0] == out[1] {
+			return out[:1]
 		}
+		if out[0] > out[1] {
+			out[0], out[1] = out[1], out[0]
+		}
+		return out
+	default:
+		slices.Sort(out)
+		return slices.Compact(out)
 	}
-	if inter == 0 {
-		return 0.0
-	}
-	union := len(a) + len(b) - inter
-	return float64(inter) / float64(union)
 }
 
 func trimTailStrings(src []string, limit int) []string {

@@ -45,6 +45,7 @@ RESTRICTED_REPO_TOKENS = (
 
 LOCAL_HOME_PATH_RE = re.compile(r"(?:^|[\s\"'`(])/(?:Users|home)/[A-Za-z0-9._-]+/")
 WINDOWS_USER_PATH_RE = re.compile(r"[A-Za-z]:\\\\Users\\\\[A-Za-z0-9._-]+", re.IGNORECASE)
+PRIVATE_EDITORIAL_ROW_RE = re.compile(r"\b" + "E" + r"0[1-6]\b")
 GO_IMPORT_STR_RE = re.compile(r'"([^"]+)"')
 
 
@@ -72,6 +73,20 @@ def ndcg_at_k(
     if ideal_dcg <= 0.0:
         return 0.0
     return min(1.0, dcg(observed_gains) / ideal_dcg)
+
+
+def reciprocal_rank(
+    ranked_ids: Sequence[str],
+    relevance_by_id: Mapping[str, float],
+    min_relevance: float = 2.0,
+) -> float:
+    """Compute Reciprocal Rank (1/rank) of the first candidate meeting min_relevance."""
+    if not ranked_ids or not relevance_by_id:
+        return 0.0
+    for idx, cid in enumerate(ranked_ids, start=1):
+        if float(relevance_by_id.get(cid, 0.0)) >= min_relevance:
+            return 1.0 / idx
+    return 0.0
 
 
 def author_gini_coefficient(author_exposures: Sequence[str] | Mapping[str, int]) -> float:
@@ -381,6 +396,8 @@ def scan_clean_room_boundary(repo_root: Path) -> list[str]:
         # 1. Check for machine-specific home paths and restricted private identifiers.
         if LOCAL_HOME_PATH_RE.search(content) or WINDOWS_USER_PATH_RE.search(content):
             violations.append(f"{rel}: contains machine-specific user path")
+        if PRIVATE_EDITORIAL_ROW_RE.search(content):
+            violations.append(f"{rel}: contains private editorial taxonomy row code")
         for token in RESTRICTED_REPO_TOKENS:
             if token in content:
                 violations.append(f"{rel}: contains restricted identifier {token!r}")

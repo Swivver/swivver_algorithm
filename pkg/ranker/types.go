@@ -114,6 +114,7 @@ type CandidateFeatureVector struct {
 	PolicyBlocked        bool                  `json:"policy_blocked"`
 	FollowedAuthor       bool                  `json:"followed_author"`
 	FollowedTopicMatches int                   `json:"followed_topic_matches"`
+	RegionMatch          bool                  `json:"region_match,omitempty"`
 	LanguageMatch        bool                  `json:"language_match"`
 	ImpressionCount      int                   `json:"impression_count,omitempty"`
 	ValidWatchRatio      float64               `json:"valid_watch_ratio"`
@@ -145,6 +146,7 @@ type ReasonCode string
 const (
 	ReasonFollowedAuthor   ReasonCode = "FOLLOWED_AUTHOR"
 	ReasonTopicMatch       ReasonCode = "TOPIC_MATCH"
+	ReasonRegionMatch      ReasonCode = "REGION_MATCH"
 	ReasonSourceBacked     ReasonCode = "SOURCE_BACKED"
 	ReasonReaderEngagement ReasonCode = "READER_ENGAGEMENT"
 	ReasonLanguageMatch    ReasonCode = "LANGUAGE_MATCH"
@@ -242,6 +244,7 @@ type Config struct {
 	// Base relevance weights.
 	FollowedAuthorWeight float64
 	TopicMatchWeight     float64
+	RegionMatchWeight    float64
 	LanguageMatchWeight  float64
 	FreshnessWeight      float64
 	FreshnessHalfLifeHrs float64
@@ -278,6 +281,7 @@ func DefaultConfig() Config {
 		MaxPageSize:                   100,
 		FollowedAuthorWeight:          0.30,
 		TopicMatchWeight:              0.22,
+		RegionMatchWeight:             0.16,
 		LanguageMatchWeight:           0.15,
 		FreshnessWeight:               0.20,
 		FreshnessHalfLifeHrs:          18.0,
@@ -315,6 +319,9 @@ func (c Config) normalized() Config {
 	}
 	if c.FreshnessHalfLifeHrs <= 0 {
 		c.FreshnessHalfLifeHrs = def.FreshnessHalfLifeHrs
+	}
+	if c.RegionMatchWeight < 0 {
+		c.RegionMatchWeight = 0
 	}
 	if c.MaxSignalFreshnessSec <= 0 {
 		c.MaxSignalFreshnessSec = def.MaxSignalFreshnessSec

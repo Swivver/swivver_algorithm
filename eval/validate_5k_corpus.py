@@ -425,8 +425,9 @@ def score_candidate_components(
         pref_topic = 0.22
     else:
         pref_topic = 0.0
+    pref_region = 0.16 if cand.get("region_match") else 0.0
     pref_lang = 0.15 if cand.get("language_match") else 0.0
-    preference = pref_author + pref_topic + pref_lang
+    preference = pref_author + pref_topic + pref_region + pref_lang
 
     age_hours = max(0.0, (now_nano - published_nano) / 3_600_000_000_000.0)
     freshness = 0.20 * math.pow(2.0, -age_hours / 18.0)
@@ -444,48 +445,80 @@ def score_candidate_components(
     delta = 0.0
     if _is_signal_active(sig):
         assert sig is not None
-        if _is_dim_available(sig, "evidence_support_tier"):
-            ev = sig.get("evidence_support_tier")
-            if ev == "supported":
-                delta += 0.10
-            elif ev == "contradicted":
+        ev_avail = _is_dim_available(sig, "evidence_support_tier")
+        cons_avail = _is_dim_available(sig, "consistency_tier")
+        leg_avail = _is_dim_available(sig, "technical_legibility_tier")
+        prov_avail = _is_dim_available(sig, "provenance_status")
+        src_avail = _is_dim_available(sig, "independent_source_clusters")
+        pacing_avail = _is_dim_available(sig, "attention_pacing_score")
+        bait_avail = _is_dim_available(sig, "bait_switch_risk")
+
+        ev_tier = sig.get("evidence_support_tier") if ev_avail else None
+        cons_tier = sig.get("consistency_tier") if cons_avail else None
+        prov_tier = sig.get("provenance_status") if prov_avail else None
+        clusters = max(0, int(sig.get("independent_source_clusters", 0))) if src_avail else 0
+
+        ev_supported = ev_tier == "supported"
+        disputed = (
+            ev_tier == "contradicted"
+            or cons_tier == "inconsistent"
+            or prov_tier == "invalid"
+        )
+        corroborated = (not disputed) and (ev_supported or clusters >= 2)
+
+        if ev_avail:
+            if ev_tier == "supported":
+                delta += 0.11
+            elif ev_tier == "contradicted":
                 delta -= 0.22
-        if _is_dim_available(sig, "consistency_tier"):
-            ct = sig.get("consistency_tier")
-            if ct == "consistent":
+        if cons_avail:
+            if cons_tier == "consistent":
                 delta += 0.03
-            elif ct == "inconsistent":
+            elif cons_tier == "inconsistent":
                 delta -= 0.10
-        if _is_dim_available(sig, "technical_legibility_tier"):
+        if leg_avail:
             tl = sig.get("technical_legibility_tier")
             if tl == "clear":
-                delta += 0.02
+                delta += 0.01
             elif tl == "degraded":
-                delta -= 0.03
+                if not corroborated:
+                    delta -= 0.03
             elif tl == "unusable":
                 delta -= 0.12
-        if _is_dim_available(sig, "provenance_status"):
-            pv = sig.get("provenance_status")
-            if pv == "verified":
-                delta += 0.03
-            elif pv == "declared":
+        if prov_avail:
+            if prov_tier == "verified":
+                delta += 0.02
+            elif prov_tier == "declared":
                 delta += 0.01
-            elif pv == "invalid":
+            elif prov_tier == "invalid":
                 delta -= 0.10
-        if _is_dim_available(sig, "independent_source_clusters"):
-            clusters = int(sig.get("independent_source_clusters", 0))
+        if src_avail:
             if clusters == 1:
                 delta += 0.02
-            elif clusters >= 2:
+            elif clusters == 2:
                 delta += 0.04
-        if _is_dim_available(sig, "attention_pacing_score"):
+            elif clusters >= 3:
+                delta += 0.05
+
+        arousal_excess = 0.0
+        bait_excess = 0.0
+        if pacing_avail:
             pacing = _clamp_unit(float(sig.get("attention_pacing_score", 0.0)))
             if pacing > 0.70:
-                delta -= 0.08 * ((pacing - 0.70) / 0.30)
-        if _is_dim_available(sig, "bait_switch_risk"):
+                arousal_excess = (pacing - 0.70) / 0.30
+                low_bait = (not bait_avail) or _clamp_unit(float(sig.get("bait_switch_risk", 0.0))) <= 0.35
+                if not (corroborated and low_bait):
+                    delta -= 0.08 * arousal_excess
+        if bait_avail:
             risk = _clamp_unit(float(sig.get("bait_switch_risk", 0.0)))
             if risk > 0.35:
-                delta -= 0.20 * ((risk - 0.35) / 0.65)
+                bait_excess = (risk - 0.35) / 0.65
+                delta -= 0.20 * bait_excess
+
+        explicit_zero_sources = src_avail and int(sig.get("independent_source_clusters", 0)) == 0 and not ev_supported
+        if (explicit_zero_sources or disputed) and (arousal_excess > 0.0 or bait_excess > 0.0):
+            delta -= 0.14 * max(arousal_excess, bait_excess)
+
         delta = max(-0.35, min(0.18, delta))
 
     impressions = max(0, int(cand.get("impression_count", 0)))
@@ -566,11 +599,18 @@ def rank_candidates_reference(
     for _ in range(target):
         best_strict_idx = -1
         best_strict_score = 0.0
+        best_window_idx = -1
+        best_window_score = 0.0
         best_author_idx = -1
         best_author_score = 0.0
+        best_no_streak_idx = -1
+        best_no_streak_score = 0.0
         best_fallback_idx = -1
         best_fallback_score = 0.0
         penalties: dict[int, float] = {}
+
+        last_author = recent_authors[-1] if recent_authors else ""
+        last_topics = set(recent_topics[-1]) if recent_topics and recent_topics[-1] else set()
 
         for i, cand in enumerate(scored):
             if used[i]:
@@ -583,8 +623,8 @@ def rank_candidates_reference(
             if aid and author_counts[aid] > 0:
                 pen += 0.12 * author_counts[aid]
             ctopics = cand["topics"]
-            if ctopics and recent_topics:
-                cset = set(ctopics)
+            cset = set(ctopics) if ctopics else set()
+            if cset and recent_topics:
                 max_j = 0.0
                 for prev in recent_topics:
                     if prev:
@@ -599,13 +639,23 @@ def rank_candidates_reference(
             eff = cand["raw_score"] - pen
             penalties[i] = pen
 
-            a_blocked = bool(aid) and recent_authors.count(aid) >= 1
+            consec_author = bool(aid) and bool(last_author) and aid == last_author
+            a_blocked = consec_author or (bool(aid) and recent_authors.count(aid) >= 1)
             t_blocked = False
             if ctopics and recent_topics:
                 for t in ctopics:
                     if sum(1 for prev in recent_topics if t in prev) >= 2:
                         t_blocked = True
                         break
+
+            inc_blocked = False
+            if cset and last_topics:
+                inter_last = len(cset & last_topics)
+                if inter_last >= 2:
+                    inc_blocked = True
+                elif inter_last > 0:
+                    if inter_last / (len(cset) + len(last_topics) - inter_last) >= 0.5:
+                        inc_blocked = True
 
             if best_fallback_idx == -1 or (
                 _compare_candidates(
@@ -620,6 +670,21 @@ def rank_candidates_reference(
             ):
                 best_fallback_idx = i
                 best_fallback_score = eff
+
+            if not consec_author:
+                if best_no_streak_idx == -1 or (
+                    _compare_candidates(
+                        eff,
+                        best_no_streak_score,
+                        cand["published_nano"],
+                        scored[best_no_streak_idx]["published_nano"],
+                        cand["candidate_id"],
+                        scored[best_no_streak_idx]["candidate_id"],
+                    )
+                    < 0
+                ):
+                    best_no_streak_idx = i
+                    best_no_streak_score = eff
 
             if not a_blocked:
                 if best_author_idx == -1 or (
@@ -636,24 +701,42 @@ def rank_candidates_reference(
                     best_author_idx = i
                     best_author_score = eff
                 if not t_blocked:
-                    if best_strict_idx == -1 or (
+                    if best_window_idx == -1 or (
                         _compare_candidates(
                             eff,
-                            best_strict_score,
+                            best_window_score,
                             cand["published_nano"],
-                            scored[best_strict_idx]["published_nano"],
+                            scored[best_window_idx]["published_nano"],
                             cand["candidate_id"],
-                            scored[best_strict_idx]["candidate_id"],
+                            scored[best_window_idx]["candidate_id"],
                         )
                         < 0
                     ):
-                        best_strict_idx = i
-                        best_strict_score = eff
+                        best_window_idx = i
+                        best_window_score = eff
+                    if not inc_blocked:
+                        if best_strict_idx == -1 or (
+                            _compare_candidates(
+                                eff,
+                                best_strict_score,
+                                cand["published_nano"],
+                                scored[best_strict_idx]["published_nano"],
+                                cand["candidate_id"],
+                                scored[best_strict_idx]["candidate_id"],
+                            )
+                            < 0
+                        ):
+                            best_strict_idx = i
+                            best_strict_score = eff
 
         if best_strict_idx != -1:
             chosen_idx, chosen_score = best_strict_idx, best_strict_score
+        elif best_window_idx != -1:
+            chosen_idx, chosen_score = best_window_idx, best_window_score
         elif best_author_idx != -1:
             chosen_idx, chosen_score = best_author_idx, best_author_score
+        elif best_no_streak_idx != -1:
+            chosen_idx, chosen_score = best_no_streak_idx, best_no_streak_score
         else:
             chosen_idx, chosen_score = best_fallback_idx, best_fallback_score
 

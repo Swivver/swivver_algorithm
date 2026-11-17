@@ -15,6 +15,7 @@ from eval.evaluate_offline import (
     main,
     minority_language_share_parity,
     ndcg_at_k,
+    reciprocal_rank,
     run_synthetic_evaluation,
     scan_clean_room_boundary,
     validate_instance_against_schema,
@@ -34,6 +35,9 @@ class EvaluateOfflineTests(unittest.TestCase):
         self.assertEqual(ndcg_at_k([], rels, k=3), 0.0)
         self.assertEqual(ndcg_at_k(["a"], rels, k=0), 0.0)
         self.assertEqual(ndcg_at_k(["x"], {"x": 0.0}, k=3), 0.0)
+        self.assertAlmostEqual(reciprocal_rank(["d", "b", "a"], rels, min_relevance=3.0), 1.0 / 3.0, places=6)
+        self.assertEqual(reciprocal_rank(["d", "c"], rels, min_relevance=3.0), 0.0)
+        self.assertEqual(reciprocal_rank([], rels), 0.0)
 
     def test_author_gini_coefficient(self) -> None:
         # Equal exposure across 5 authors -> Gini = 0.0
@@ -218,10 +222,10 @@ class EvaluateOfflineTests(unittest.TestCase):
             bad_go.write_text('package x\nimport "example.com/external/pkg"\n', encoding="utf-8")
 
             bad_md = root / "notes.md"
-            bad_md.write_text("Path /" + "Users/alice/secret\n", encoding="utf-8")
+            bad_md.write_text("Path /" + "Users/alice/secret and row " + "E" + "01\n", encoding="utf-8")
 
             violations = scan_clean_room_boundary(root)
-            self.assertGreaterEqual(len(violations), 3)
+            self.assertGreaterEqual(len(violations), 4)
 
     def test_cli_entrypoint_passes(self) -> None:
         summary = run_synthetic_evaluation(REPO_ROOT)
